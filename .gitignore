@@ -1,0 +1,10 @@
+# Odin build output
+signal-engine
+*.o
+*.a
+
+# TLS certificates (deferred, but avoid accidental commits when added)
+certs/
+
+# macOS
+.DS_Store
