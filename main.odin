@@ -7,7 +7,7 @@ import "core:os"
 
 // App_State threads all shared mutable state through loop.user_data so that
 // callbacks don't need globals.
-App_State :: struct {
+Engine_Context :: struct {
 	store:      ^Context_Store,
 	metrics:    Engine_Metrics,
 	statsd:     StatsD,
@@ -46,20 +46,20 @@ main :: proc() {
 		fmt.eprintfln("failed to connect to: %s[%d], will retry", cfg.egress_host, cfg.egress_port)
 	}
 
-	app := App_State{}
-	app.store = context_store_create()
-	defer context_store_destroy(app.store)
+	ectxt := Engine_Context{}
+	ectxt.store = context_store_create()
+	defer context_store_destroy(ectxt.store)
 
 	if cfg.statsd_port != 0 {
-		app.statsd, app.has_statsd = statsd_create(cfg.statsd_host, cfg.statsd_port)
-		if !app.has_statsd {
+		ectxt.statsd, ectxt.has_statsd = statsd_create(cfg.statsd_host, cfg.statsd_port)
+		if !ectxt.has_statsd {
 			log.warnf("failed to connect to StatsD at %s:%d", cfg.statsd_host, cfg.statsd_port)
 		} else {
-			defer statsd_destroy(app.statsd)
+			defer statsd_destroy(ectxt.statsd)
 		}
 	}
 
-	loop.user_data = &app
+	loop.user_data = &ectxt
 
 	if !loop_listen(loop) {
 		fmt.eprintln("failed to listen at: ", cfg.listen_port)
@@ -72,17 +72,17 @@ main :: proc() {
 }
 
 on_tick :: proc(loop: ^Run_Loop, ud: rawptr) {
-	app := (^App_State)(ud)
-	n := context_purge_stale(app.store, loop.cfg.context_ttl_ms)
-	if app.has_statsd {
-		app.metrics.purged_contexts += n
-		app.metrics.active_contexts = context_count(app.store)
-		metrics_flush(&app.metrics, app.statsd)
+	ectxt := (^Engine_Context)(ud)
+	n := context_purge_stale(ectxt.store, loop.cfg.context_ttl_ms)
+	if ectxt.has_statsd {
+		ectxt.metrics.purged_contexts += n
+		ectxt.metrics.active_contexts = context_count(ectxt.store)
+		metrics_flush(&ectxt.metrics, ectxt.statsd)
 	}
 }
 
 on_ingress_data :: proc(conn: ^Connection, data: []u8, ud: rawptr) -> int {
-	app := (^App_State)(ud)
+	ectxt := (^Engine_Context)(ud)
 	consumed: int = 0
 	/// redirect all default allocations to temp; explicit allocators (store.allocator, loop.allocator) are unaffected
 	context.allocator = context.temp_allocator
@@ -103,16 +103,16 @@ on_ingress_data :: proc(conn: ^Connection, data: []u8, ud: rawptr) -> int {
 
 		if err != nil {
 			log.warn("unable to parse input line to Signal:", err)
-			app.metrics.parse_errors += 1
+			ectxt.metrics.parse_errors += 1
 		} else {
-			app.metrics.signals_received += 1
-			ctx := context_get_or_create(app.store, sig.signal_id)
+			ectxt.metrics.signals_received += 1
+			ctx := context_get_or_create(ectxt.store, sig.signal_id)
 			analyzer_update(&sig, ctx)
 
 			ds := make(DecisionSet, context.temp_allocator)
 			rules_evaluate(ctx, &ds)
 
-			emit_decisions(conn.loop, ds, &app.metrics)
+			emit_decisions(conn.loop, ds, &ectxt.metrics)
 		}
 
 		consumed = pos + 1 // includes the \n
