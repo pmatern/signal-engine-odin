@@ -12,6 +12,8 @@ EngineConfig :: struct {
 	worker_threads: int,
 	max_inflight:   int,
 	context_ttl_ms: u64,
+	statsd_host:    string,
+	statsd_port:    int, // 0 = disabled
 	cert_path:      string,
 	key_path:       string,
 	ca_cert_path:   string,
@@ -27,6 +29,8 @@ _make_default_config :: proc() -> EngineConfig {
 		worker_threads = 4,
 		max_inflight = 1024,
 		context_ttl_ms = 300_000,
+		statsd_host = "127.0.0.1",
+		statsd_port = 0, // disabled by default; set to 8125 to enable
 		cert_path = "certs/server.crt",
 		key_path = "certs/server.key",
 		ca_cert_path = "certs/ca.crt",
@@ -62,6 +66,7 @@ load_config_from_file :: proc(
 destroy_config :: proc(cfg: ^EngineConfig) {
 	context.allocator = cfg.allocator
 	delete(cfg.egress_host)
+	delete(cfg.statsd_host)
 	delete(cfg.cert_path)
 	delete(cfg.key_path)
 	delete(cfg.ca_cert_path)

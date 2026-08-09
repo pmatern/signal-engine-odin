@@ -5,6 +5,15 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 
+// App_State threads all shared mutable state through loop.user_data so that
+// callbacks don't need globals.
+App_State :: struct {
+	store:      ^Context_Store,
+	metrics:    Engine_Metrics,
+	statsd:     StatsD,
+	has_statsd: bool,
+}
+
 main :: proc() {
 	config_path := len(os.args) > 1 ? os.args[1] : "config.json"
 	cfg, ok := load_config_from_file(config_path)
@@ -37,9 +46,20 @@ main :: proc() {
 		fmt.eprintfln("failed to connect to: %s[%d], will retry", cfg.egress_host, cfg.egress_port)
 	}
 
-	store := context_store_create()
-	defer context_store_destroy(store)
-	loop.user_data = store
+	app := App_State{}
+	app.store = context_store_create()
+	defer context_store_destroy(app.store)
+
+	if cfg.statsd_port != 0 {
+		app.statsd, app.has_statsd = statsd_create(cfg.statsd_host, cfg.statsd_port)
+		if !app.has_statsd {
+			log.warnf("failed to connect to StatsD at %s:%d", cfg.statsd_host, cfg.statsd_port)
+		} else {
+			defer statsd_destroy(app.statsd)
+		}
+	}
+
+	loop.user_data = &app
 
 	if !loop_listen(loop) {
 		fmt.eprintln("failed to listen at: ", cfg.listen_port)
@@ -52,11 +72,17 @@ main :: proc() {
 }
 
 on_tick :: proc(loop: ^Run_Loop, ud: rawptr) {
-	context_purge_stale((^Context_Store)(ud), loop.cfg.context_ttl_ms)
+	app := (^App_State)(ud)
+	n := context_purge_stale(app.store, loop.cfg.context_ttl_ms)
+	if app.has_statsd {
+		app.metrics.purged_contexts += n
+		app.metrics.active_contexts = context_count(app.store)
+		metrics_flush(&app.metrics, app.statsd)
+	}
 }
 
 on_ingress_data :: proc(conn: ^Connection, data: []u8, ud: rawptr) -> int {
-	store := (^Context_Store)(ud)
+	app := (^App_State)(ud)
 	consumed: int = 0
 	/// redirect all default allocations to temp; explicit allocators (store.allocator, loop.allocator) are unaffected
 	context.allocator = context.temp_allocator
@@ -77,14 +103,16 @@ on_ingress_data :: proc(conn: ^Connection, data: []u8, ud: rawptr) -> int {
 
 		if err != nil {
 			log.warn("unable to parse input line to Signal:", err)
+			app.metrics.parse_errors += 1
 		} else {
-			ctx := context_get_or_create(store, sig.signal_id)
+			app.metrics.signals_received += 1
+			ctx := context_get_or_create(app.store, sig.signal_id)
 			analyzer_update(&sig, ctx)
 
 			ds := make(DecisionSet, context.temp_allocator)
 			rules_evaluate(ctx, &ds)
 
-			emit_decisions(conn.loop, ds)
+			emit_decisions(conn.loop, ds, &app.metrics)
 		}
 
 		consumed = pos + 1 // includes the \n
@@ -94,7 +122,7 @@ on_ingress_data :: proc(conn: ^Connection, data: []u8, ud: rawptr) -> int {
 	return consumed
 }
 
-emit_decisions :: proc(loop: ^Run_Loop, ds: DecisionSet) {
+emit_decisions :: proc(loop: ^Run_Loop, ds: DecisionSet, m: ^Engine_Metrics) {
 	for d in ds {
 		json_bytes, merr := json.marshal(d, {}, context.temp_allocator)
 		if merr != nil {
@@ -106,6 +134,9 @@ emit_decisions :: proc(loop: ^Run_Loop, ds: DecisionSet) {
 		buf[len(json_bytes)] = '\n'
 		if !loop_send_egress(loop, buf) {
 			log.warn("egress not connected, dropping decision")
+			m.egress_drops += 1
+		} else {
+			m.decisions_emitted += 1
 		}
 	}
 }

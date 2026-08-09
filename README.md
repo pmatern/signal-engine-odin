@@ -52,6 +52,8 @@ Configuration is loaded from a JSON file (default: `config.json`). All fields ar
 | `egress_host` | `"localhost"` | Host to connect to for egress |
 | `egress_port` | `9443` | Port to connect to for egress |
 | `context_ttl_ms` | `300000` | Milliseconds before an idle signal context is purged |
+| `statsd_host` | `"127.0.0.1"` | StatsD server host |
+| `statsd_port` | `0` | StatsD server port; `0` disables metrics emission |
 | `log_level` | `"info"` | One of `debug`, `info`, `warning`, `error`, `fatal` |
 
 ## Building

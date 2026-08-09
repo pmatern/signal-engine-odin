@@ -58,13 +58,13 @@ context_count :: proc(store: ^Context_Store) -> int {
 }
 
 // Removes all entries not seen within max_age_ms milliseconds.
-// Call periodically from the event loop thread.
-context_purge_stale :: proc(store: ^Context_Store, max_age_ms: u64) {
+// Returns the number of entries purged. Call periodically from the event loop thread.
+context_purge_stale :: proc(store: ^Context_Store, max_age_ms: u64) -> int {
 	max_age := time.Duration(max_age_ms) * time.Millisecond
 
 	//short circuit if we recently ran the purge
 	if time.tick_since(store.last_purge) < max_age {
-		return
+		return 0
 	} else {
 		store.last_purge = time.tick_now()
 	}
@@ -85,4 +85,6 @@ context_purge_stale :: proc(store: ^Context_Store, max_age_ms: u64) {
 		delete(key, store.allocator)
 		free(entry, store.allocator)
 	}
+
+	return len(stale)
 }
